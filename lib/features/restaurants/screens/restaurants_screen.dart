@@ -149,6 +149,20 @@ class _AddRestaurantSheetState extends ConsumerState<AddRestaurantSheet> {
   String? _error;
 
   @override
+  void initState() {
+    super.initState();
+    _prefillAddress();
+  }
+
+  Future<void> _prefillAddress() async {
+    final settings = await ref.read(firebaseServiceProvider).getRestaurantSettings();
+    final address = settings['address']?.toString() ?? '';
+    if (mounted && address.isNotEmpty && _addressCtrl.text.isEmpty) {
+      setState(() => _addressCtrl.text = address);
+    }
+  }
+
+  @override
   void dispose() {
     _nameCtrl.dispose();
     _addressCtrl.dispose();

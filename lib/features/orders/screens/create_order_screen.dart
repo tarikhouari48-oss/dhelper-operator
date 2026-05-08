@@ -174,7 +174,7 @@ class _CreateOrderScreenState extends ConsumerState<CreateOrderScreen> {
               segments: [
                 ButtonSegment(value: PaymentType.cash, label: Text(l10n.cash), icon: const Icon(Icons.money)),
                 ButtonSegment(value: PaymentType.card, label: Text(l10n.card), icon: const Icon(Icons.credit_card)),
-                ButtonSegment(value: PaymentType.online, label: Text(l10n.online), icon: const Icon(Icons.payment)),
+                ButtonSegment(value: PaymentType.bizum, label: const Text('Bizum'), icon: const Icon(Icons.phone_android)),
               ],
               selected: {_paymentType},
               onSelectionChanged: (s) => setState(() => _paymentType = s.first),

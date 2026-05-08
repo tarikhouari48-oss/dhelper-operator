@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>D-helper — Ticket de caisse</title>
+  <style>
+
+    /* ═══════════════════════════════════════════
+       SCREEN PREVIEW — Dark dashboard UI
+    ═══════════════════════════════════════════ */
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #0f0f1a;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 32px 16px 80px;
+      font-family: 'Segoe UI', Arial, sans-serif;
+    }
+
+    .toolbar {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 28px;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+
+    .btn {
+      padding: 10px 20px;
+      border-radius: 8px;
+      border: none;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 600;
+      transition: opacity .15s;
+    }
+    .btn:hover { opacity: .85; }
+    .btn-print  { background: #6c63ff; color: #fff; }
+    .btn-80     { background: #1e1e35; color: #aaa; border: 1px solid #333; }
+    .btn-58     { background: #1e1e35; color: #aaa; border: 1px solid #333; }
+    .btn-active { background: #6c63ff !important; color: #fff !important; border-color: #6c63ff !important; }
+
+    .receipt-wrap {
+      background: #1a1a2e;
+      border-radius: 16px;
+      padding: 28px 20px;
+      box-shadow: 0 20px 60px rgba(0,0,0,.6), 0 0 0 1px rgba(255,255,255,.05);
+      display: flex;
+      justify-content: center;
+    }
+
+    /* ═══════════════════════════════════════════
+       RECEIPT — Thermal paper look
+    ═══════════════════════════════════════════ */
+    .receipt {
+      background: #fff;
+      width: 80mm;
+      padding: 5mm 4mm 8mm;
+      font-family: 'Courier New', Courier, monospace;
+      font-size: 11.5px;
+      color: #000;
+      line-height: 1.45;
+      transition: width .25s ease;
+      /* Torn paper edge bottom */
+      border-bottom: none;
+      box-shadow:
+        0 0 0 1px #ddd,
+        0 8px 0 -4px #fff,
+        0 8px 0 -3px #ddd,
+        0 16px 0 -8px #fff,
+        0 16px 0 -7px #ddd;
+    }
+
+    .receipt.w58 { width: 58mm; font-size: 10.5px; }
+
+    /* ─── Typography helpers ─── */
+    .tc  { text-align: center; }
+    .tr  { text-align: right; }
+    .b   { font-weight: bold; }
+    .sm  { font-size: 9.5px; }
+    .xs  { font-size: 8.5px; }
+    .lg  { font-size: 15px; font-weight: bold; }
+    .xl  { font-size: 20px; font-weight: 900; letter-spacing: .5px; }
+    .it  { font-style: italic; }
+    .up  { text-transform: uppercase; }
+    .ls1 { letter-spacing: 1px; }
+    .ls2 { letter-spacing: 2px; }
+    .ls3 { letter-spacing: 3px; }
+
+    /* ─── Separators ─── */
+    .sep-dbl { border: none; border-top: 2px solid #000; margin: 5px 0; }
+    .sep     { border: none; border-top: 1px dashed #000; margin: 4px 0; }
+    .sep-dot { border: none; border-top: 1px dotted #000; margin: 3px 0; }
+
+    /* ─── Spacing ─── */
+    .mt1 { margin-top: 2px; }
+    .mt2 { margin-top: 5px; }
+    .mt3 { margin-top: 8px; }
+    .mb1 { margin-bottom: 2px; }
+    .mb2 { margin-bottom: 5px; }
+
+    /* ─── Logo section ─── */
+    .logo-area { text-align: center; padding: 4px 0 6px; }
+    .logo-area img {
+      max-width: 36mm;
+      max-height: 18mm;
+      filter: grayscale(100%) contrast(200%) brightness(0);
+      image-rendering: crisp-edges;
+    }
+    .logo-fallback {
+      font-size: 22px;
+      font-weight: 900;
+      letter-spacing: 5px;
+      line-height: 1.1;
+    }
+    .logo-sub {
+      font-size: 9px;
+      letter-spacing: 3px;
+      font-weight: bold;
+      margin-top: 1px;
+    }
+    .slogan {
+      font-size: 8.5px;
+      font-style: italic;
+      margin-top: 3px;
+      color: #222;
+    }
+
+    /* ─── Info rows ─── */
+    .row {
+      display: flex;
+      justify-content: space-between;
+      gap: 4px;
+      margin: 1.5px 0;
+    }
+    .row-label { color: #000; white-space: nowrap; }
+    .row-value { font-weight: bold; text-align: right; word-break: break-word; max-width: 62%; }
+
+    /* ─── Section label ─── */
+    .section-title {
+      font-size: 9px;
+      font-weight: bold;
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      margin: 3px 0 2px;
+    }
+
+    /* ─── Order type badge ─── */
+    .badge {
+      display: inline-block;
+      border: 1.5px solid #000;
+      padding: 0 6px;
+      font-size: 10px;
+      font-weight: bold;
+      letter-spacing: 1px;
+    }
+
+    /* ─── Items table ─── */
+    .items-header {
+      display: flex;
+      font-size: 9px;
+      font-weight: bold;
+      text-transform: uppercase;
+      letter-spacing: .5px;
+      margin: 2px 0;
+    }
+    .col-qty   { width: 9%;  }
+    .col-name  { flex: 1;    }
+    .col-pu    { width: 18%; text-align: right; }
+    .col-tot   { width: 20%; text-align: right; font-weight: bold; }
+
+    .item-row {
+      display: flex;
+      margin: 3px 0 1px;
+    }
+    .item-note {
+      font-size: 9.5px;
+      font-style: italic;
+      padding-left: 10px;
+      line-height: 1.3;
+      color: #111;
+    }
+    .item-note::before { content: "→ "; }
+
+    /* ─── Totals ─── */
+    .total-row {
+      display: flex;
+      justify-content: space-between;
+      margin: 2px 0;
+    }
+    .total-row.discount { }
+    .grand-total-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      margin: 4px 0 2px;
+    }
+    .grand-label { font-size: 14px; font-weight: 900; text-transform: uppercase; letter-spacing: 1px; }
+    .grand-value { font-size: 22px; font-weight: 900; }
+
+    /* ─── Kitchen notes ─── */
+    .k-note { font-size: 11px; font-weight: bold; margin: 2px 0; }
+    .k-note::before { content: "▶  "; }
+
+    /* ─── Footer ─── */
+    .footer { text-align: center; padding-top: 2px; }
+    .footer-thanks { font-size: 13px; font-weight: bold; margin-bottom: 5px; }
+    .footer-social { font-size: 9.5px; line-height: 1.7; }
+    .footer-powered { font-size: 8px; letter-spacing: 2px; text-transform: uppercase; margin-top: 4px; }
+
+    /* ─── Cut line ─── */
+    .cut-line {
+      margin-top: 12px;
+      text-align: center;
+      font-size: 9px;
+      color: #888;
+      border-top: 1px dashed #888;
+      padding-top: 4px;
+    }
+    .cut-line::before { content: "✂  "; }
+
+    /* ═══════════════════════════════════════════
+       PRINT STYLES — Thermal optimized
+    ═══════════════════════════════════════════ */
+    @media print {
+      @page {
+        margin: 0;
+        size: 80mm auto;
+      }
+
+      body {
+        background: white !important;
+        padding: 0 !important;
+        display: block !important;
+      }
+
+      .toolbar, .receipt-wrap {
+        display: none !important;
+      }
+
+      .receipt-print-wrapper {
+        display: block !important;
+      }
+
+      .receipt {
+        width: 100% !important;
+        box-shadow: none !important;
+        border-bottom: none !important;
+        padding: 3mm !important;
+        font-size: 12px !important;
+      }
+
+      .cut-line { display: none; }
+    }
+
+    .receipt-print-wrapper { display: none; }
+
+  </style>
+</head>
+<body>
+
+  <!-- ── Toolbar ── -->
+  <div class="toolbar">
+    <button class="btn btn-80 btn-active" id="btn80" onclick="setWidth(80)">◻ 80 mm</button>
+    <button class="btn btn-58"            id="btn58" onclick="setWidth(58)">◻ 58 mm</button>
+    <button class="btn btn-print" onclick="window.print()">🖨&nbsp; Imprimer</button>
+  </div>
+
+  <!-- ── Receipt preview ── -->
+  <div class="receipt-wrap">
+    <div class="receipt" id="receipt">
+
+      <!-- ══════════════════ HEADER ══════════════════ -->
+      <div class="logo-area">
+        <img src="icons/icon-192.png" alt="DHELPER"
+             onerror="this.style.display='none'; document.getElementById('logo-fb').style.display='block'">
+        <div id="logo-fb" style="display:none">
+          <div class="logo-fallback tc ls3">DHELPER</div>
+        </div>
+        <div class="logo-sub tc ls3 mt1">SMART SERVICES</div>
+        <div class="slogan tc mt1">Plus qu'un service, une solution.</div>
+      </div>
+
+      <hr class="sep-dbl">
+
+      <!-- ══════════════════ ORDER INFO ══════════════════ -->
+      <div class="row"><span class="row-label sm">Restaurant :</span><span class="row-value sm b" id="r-name">Le Bon Goût</span></div>
+      <div class="row"><span class="row-label sm">Adresse :</span><span class="row-value sm" id="r-address">Carrer de Provença 78</span></div>
+      <div class="row"><span class="row-label sm">Tél :</span><span class="row-value sm" id="r-phone">+34 600 000 000</span></div>
+
+      <hr class="sep">
+
+      <div class="row"><span class="row-label sm">Commande&nbsp;# :</span><span class="row-value b" id="o-id">#0042</span></div>
+      <div class="row"><span class="row-label sm">Ticket&nbsp;# :</span><span class="row-value sm" id="o-ticket">T-00142</span></div>
+      <div class="row"><span class="row-label sm">Table :</span><span class="row-value sm" id="o-table">05</span></div>
+      <div class="row"><span class="row-label sm">Caissier :</span><span class="row-value sm" id="o-cashier">Admin</span></div>
+      <div class="row mt1">
+        <span class="row-label sm">Type :</span>
+        <span class="row-value"><span class="badge" id="o-type">🛵 LIVRAISON</span></span>
+      </div>
+      <div class="row mt1"><span class="row-label sm">Date :</span><span class="row-value sm" id="o-date">07/05/2026</span></div>
+      <div class="row"><span class="row-label sm">Heure :</span><span class="row-value sm" id="o-time">13:00</span></div>
+
+      <hr class="sep-dbl">
+
+      <!-- ══════════════════ CUSTOMER ══════════════════ -->
+      <div class="section-title">Client</div>
+      <div class="row"><span class="row-label sm">Nom :</span><span class="row-value sm b" id="c-name">Mohamed Amine</span></div>
+      <div class="row"><span class="row-label sm">Tél :</span><span class="row-value sm" id="c-phone">+34 612 345 678</span></div>
+      <div class="row"><span class="row-label sm">Adresse :</span><span class="row-value sm" id="c-addr">Carrer de Mallorca 12, 2°</span></div>
+
+      <hr class="sep-dbl">
+
+      <!-- ══════════════════ ITEMS ══════════════════ -->
+      <div class="items-header">
+        <span class="col-qty">QTY</span>
+        <span class="col-name">ARTICLE</span>
+        <span class="col-pu">P.U.</span>
+        <span class="col-tot">TOTAL</span>
+      </div>
+      <hr class="sep">
+
+      <!-- Item 1 -->
+      <div class="item-row">
+        <span class="col-qty">1x</span>
+        <span class="col-name b">Burger Classic</span>
+        <span class="col-pu">7.50€</span>
+        <span class="col-tot">7.50€</span>
+      </div>
+      <div class="item-note">Extra Cheese</div>
+      <div class="item-note">Sans oignons</div>
+
+      <!-- Item 2 -->
+      <div class="item-row mt2">
+        <span class="col-qty">2x</span>
+        <span class="col-name b">Coca Cola 33cl</span>
+        <span class="col-pu">1.50€</span>
+        <span class="col-tot">3.00€</span>
+      </div>
+
+      <!-- Item 3 -->
+      <div class="item-row mt2">
+        <span class="col-qty">1x</span>
+        <span class="col-name b">Pizza Margherita</span>
+        <span class="col-pu">9.90€</span>
+        <span class="col-tot">9.90€</span>
+      </div>
+      <div class="item-note">Taille : Grande</div>
+      <div class="item-note">Extra piquant</div>
+
+      <hr class="sep-dbl">
+
+      <!-- ══════════════════ PAYMENT SUMMARY ══════════════════ -->
+      <div class="total-row"><span class="sm">Sous-total</span><span class="sm">20.40€</span></div>
+      <div class="total-row"><span class="sm">TVA (10%)</span><span class="sm">2.04€</span></div>
+      <div class="total-row"><span class="sm">Réduction</span><span class="sm">- 1.00€</span></div>
+      <div class="total-row"><span class="sm">Frais de livraison</span><span class="sm">+ 1.50€</span></div>
+
+      <hr class="sep-dbl">
+
+      <div class="grand-total-row">
+        <span class="grand-label">Total</span>
+        <span class="grand-value">22.94€</span>
+      </div>
+
+      <div class="row mt1">
+        <span class="sm">Paiement :</span>
+        <span class="sm b">💵 Espèces</span>
+      </div>
+
+      <hr class="sep-dbl">
+
+      <!-- ══════════════════ KITCHEN NOTES ══════════════════ -->
+      <div class="section-title mt1">⚠ Notes Cuisine</div>
+      <div class="k-note">Sans oignons — Burger</div>
+      <div class="k-note">Extra piquant — Pizza</div>
+      <div class="k-note">Appeler client à l'arrivée</div>
+
+      <hr class="sep-dbl">
+
+      <!-- ══════════════════ FOOTER ══════════════════ -->
+      <div class="footer mt2">
+        <div class="footer-thanks">✦ Merci pour votre commande ✦</div>
+        <hr class="sep-dot">
+        <div class="footer-social">
+          Instagram : @dhelper<br>
+          TikTok : @dhelper<br>
+          support@dhelper.app
+        </div>
+        <hr class="sep-dot">
+        <div class="footer-powered ls2">Powered by DHELPER</div>
+      </div>
+
+      <!-- Paper cut spacing -->
+      <div class="cut-line">Couper ici</div>
+
+    </div><!-- /receipt -->
+  </div><!-- /receipt-wrap -->
+
+  <script>
+    function setWidth(mm) {
+      const r   = document.getElementById('receipt');
+      const b80 = document.getElementById('btn80');
+      const b58 = document.getElementById('btn58');
+      if (mm === 58) {
+        r.classList.add('w58');
+        b58.classList.add('btn-active');
+        b80.classList.remove('btn-active');
+      } else {
+        r.classList.remove('w58');
+        b80.classList.add('btn-active');
+        b58.classList.remove('btn-active');
+      }
+    }
+
+    // Auto-fill today's date/time
+    (function() {
+      const now = new Date();
+      const pad = n => String(n).padStart(2, '0');
+      document.getElementById('o-date').textContent =
+        `${pad(now.getDate())}/${pad(now.getMonth()+1)}/${now.getFullYear()}`;
+      document.getElementById('o-time').textContent =
+        `${pad(now.getHours())}:${pad(now.getMinutes())}`;
+    })();
+  </script>
+
+</body>
+</html>

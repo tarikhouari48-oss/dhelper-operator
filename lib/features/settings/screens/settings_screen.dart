@@ -123,34 +123,40 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                     ),
                   ),
                   const SizedBox(height: 10),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: TextField(
-                          controller: _phoneCtrl,
-                          keyboardType: TextInputType.phone,
-                          decoration: const InputDecoration(
-                            labelText: 'Teléfono',
-                            prefixIcon: Icon(Icons.phone_outlined),
-                            border: OutlineInputBorder(),
-                            isDense: true,
-                          ),
-                        ),
+                  LayoutBuilder(builder: (context, constraints) {
+                    final wide = constraints.maxWidth >= 400;
+                    final phoneField = TextField(
+                      controller: _phoneCtrl,
+                      keyboardType: TextInputType.phone,
+                      decoration: const InputDecoration(
+                        labelText: 'Teléfono',
+                        prefixIcon: Icon(Icons.phone_outlined),
+                        border: OutlineInputBorder(),
+                        isDense: true,
                       ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: TextField(
-                          controller: _hoursCtrl,
-                          decoration: const InputDecoration(
-                            labelText: 'Horario',
-                            prefixIcon: Icon(Icons.schedule_outlined),
-                            border: OutlineInputBorder(),
-                            isDense: true,
-                          ),
-                        ),
+                    );
+                    final hoursField = TextField(
+                      controller: _hoursCtrl,
+                      decoration: const InputDecoration(
+                        labelText: 'Horario',
+                        prefixIcon: Icon(Icons.schedule_outlined),
+                        border: OutlineInputBorder(),
+                        isDense: true,
                       ),
-                    ],
-                  ),
+                    );
+                    if (wide) {
+                      return Row(children: [
+                        Expanded(child: phoneField),
+                        const SizedBox(width: 10),
+                        Expanded(child: hoursField),
+                      ]);
+                    }
+                    return Column(children: [
+                      phoneField,
+                      const SizedBox(height: 10),
+                      hoursField,
+                    ]);
+                  }),
                   const SizedBox(height: 12),
                   SizedBox(
                     width: double.infinity,

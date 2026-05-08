@@ -24,27 +24,30 @@ class DashboardScreen extends ConsumerWidget {
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 80),
       children: [
         const SizedBox(height: 8),
-        SegmentedButton<String>(
-          segments: [
-            ButtonSegment(
-                value: 'today',
-                label: Text(l10n.today),
-                icon: const Icon(Icons.today_outlined, size: 16)),
-            ButtonSegment(
-                value: 'month',
-                label: Text(l10n.thisMonth),
-                icon: const Icon(Icons.calendar_month_outlined, size: 16)),
-            ButtonSegment(
-                value: 'year',
-                label: Text(l10n.thisYear),
-                icon: const Icon(Icons.bar_chart_outlined, size: 16)),
-          ],
-          selected: {period},
-          onSelectionChanged: (s) =>
-              ref.read(_periodProvider.notifier).state = s.first,
-          style:
-              SegmentedButton.styleFrom(selectedBackgroundColor: _green.withAlpha(30)),
-        ),
+        LayoutBuilder(builder: (context, constraints) {
+          final showIcons = constraints.maxWidth >= 420;
+          return SegmentedButton<String>(
+            segments: [
+              ButtonSegment(
+                  value: 'today',
+                  label: Text(l10n.today),
+                  icon: showIcons ? const Icon(Icons.today_outlined, size: 16) : null),
+              ButtonSegment(
+                  value: 'month',
+                  label: Text(l10n.thisMonth),
+                  icon: showIcons ? const Icon(Icons.calendar_month_outlined, size: 16) : null),
+              ButtonSegment(
+                  value: 'year',
+                  label: Text(l10n.thisYear),
+                  icon: showIcons ? const Icon(Icons.bar_chart_outlined, size: 16) : null),
+            ],
+            selected: {period},
+            onSelectionChanged: (s) =>
+                ref.read(_periodProvider.notifier).state = s.first,
+            style:
+                SegmentedButton.styleFrom(selectedBackgroundColor: _green.withAlpha(30)),
+          );
+        }),
         const SizedBox(height: 16),
 
         // Earnings card

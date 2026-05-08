@@ -3,18 +3,18 @@ import 'dart:convert';
 import 'dart:math';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
+import 'package:supabase_flutter/supabase_flutter.dart';
 import '../models/order_model.dart';
 import '../models/driver_model.dart';
 import '../models/restaurant_model.dart';
 
-const _dbUrl = 'https://d-helper-f1331-default-rtdb.firebaseio.com';
-
-// Restaurant coords — Carrer de Provença 78, Barcelona
 const _restLat = 41.3917;
 const _restLng = 2.1649;
 const _maxOrdersPerDriver = 3;
 
 final firebaseServiceProvider = Provider<FirebaseService>((ref) => FirebaseService());
+
+SupabaseClient get _db => Supabase.instance.client;
 
 // ---------------------------------------------------------------------------
 // Stats model
@@ -45,8 +45,6 @@ class PlatformStats {
 // Service
 // ---------------------------------------------------------------------------
 class FirebaseService {
-  final _client = http.Client();
-
   // --- Operator auth (mock) ---
   static const _adminEmail = 'admin@dhelper.com';
   static const _adminPassword = 'admin123';
@@ -63,20 +61,92 @@ class FirebaseService {
   }
 
   bool validateResetCode(String code) => code == _resetCode;
-
   void clearResetCode() => _resetCode = null;
 
-  // --- Orders (Firebase Realtime Database) ---
-
-  // Local cache updated by the watchOrders stream for synchronous reads
+  // --- Caches ---
   List<OrderModel> _cachedOrders = [];
-
-  // driverId → number of non-delivered active orders
+  List<DriverAccount> _cachedDrivers = [];
   final Map<String, int> _driverActiveOrders = {};
 
   FirebaseService() {
-    _drivers = _seedDrivers();
+    _initDrivers();
     _startGpsSimulation();
+  }
+
+  // --- Driver helpers ---
+
+  static DriverAccount _driverFromRow(Map<String, dynamic> r) => DriverAccount(
+        id: r['id']?.toString() ?? '',
+        name: r['name']?.toString() ?? '',
+        email: r['email']?.toString() ?? '',
+        phone: r['phone']?.toString() ?? '',
+        vehicleType: r['vehicle_type'] == 'motorcycle'
+            ? DriverVehicleType.motorcycle
+            : DriverVehicleType.bike,
+        isOnline: r['is_online'] as bool? ?? false,
+        lat: (r['lat'] as num?)?.toDouble(),
+        lng: (r['lng'] as num?)?.toDouble(),
+        todayDeliveries: (r['today_deliveries'] as num?)?.toInt() ?? 0,
+        todayEarnings: (r['today_earnings'] as num?)?.toDouble() ?? 0,
+      );
+
+  Future<void> _initDrivers() async {
+    try {
+      final rows = await _db.from('drivers').select();
+      final list = rows as List<dynamic>;
+      if (list.isEmpty) {
+        await _seedDrivers();
+        final seeded = await _db.from('drivers').select();
+        _cachedDrivers = (seeded as List<dynamic>)
+            .map((r) => _driverFromRow(Map<String, dynamic>.from(r as Map)))
+            .toList();
+      } else {
+        _cachedDrivers = list
+            .map((r) => _driverFromRow(Map<String, dynamic>.from(r as Map)))
+            .toList();
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _seedDrivers() async {
+    await _db.from('drivers').upsert([
+      {
+        'id': 'drv-seed-1',
+        'name': 'Ahmed Benali',
+        'email': 'ahmed@dhelper.com',
+        'phone': '+34 611 111 111',
+        'vehicle_type': 'motorcycle',
+        'is_online': true,
+        'lat': 41.3938,
+        'lng': 2.1618,
+        'today_deliveries': 7,
+        'today_earnings': 98.50,
+      },
+      {
+        'id': 'drv-seed-2',
+        'name': 'Juan García',
+        'email': 'juan@dhelper.com',
+        'phone': '+34 622 222 222',
+        'vehicle_type': 'motorcycle',
+        'is_online': true,
+        'lat': 41.3851,
+        'lng': 2.1960,
+        'today_deliveries': 5,
+        'today_earnings': 74.00,
+      },
+      {
+        'id': 'drv-seed-3',
+        'name': 'María López',
+        'email': 'maria@dhelper.com',
+        'phone': '+34 633 333 333',
+        'vehicle_type': 'bike',
+        'is_online': false,
+        'lat': 41.3845,
+        'lng': 2.1320,
+        'today_deliveries': 3,
+        'today_earnings': 41.50,
+      },
+    ]);
   }
 
   // ── Auto-assignment helpers ───────────────────────────────────────────────
@@ -89,10 +159,9 @@ class FirebaseService {
   }
 
   DriverAccount? _findBestDriver() {
-    final available = _drivers.where((d) {
+    final available = _cachedDrivers.where((d) {
       if (!d.isOnline) return false;
       if ((_driverActiveOrders[d.id] ?? 0) >= _maxOrdersPerDriver) return false;
-      // Block driver if they have any pickedUp order (delivering mode)
       final isDelivering = _cachedOrders.any(
         (o) => o.driverId == d.id && o.status == OrderStatus.pickedUp,
       );
@@ -108,101 +177,74 @@ class FirebaseService {
     return available.first;
   }
 
-  Stream<List<OrderModel>> watchOrders() async* {
-    while (true) {
-      try {
-        final res = await _client
-            .get(Uri.parse('$_dbUrl/orders.json'))
-            .timeout(const Duration(seconds: 10));
-        if (res.statusCode == 200 && res.body != 'null') {
-          final map = Map<String, dynamic>.from(jsonDecode(res.body) as Map);
-          final orders = map.entries.map((e) {
-            final m = Map<String, dynamic>.from(e.value as Map);
-            if (m['id'] == null || (m['id'] as String).isEmpty) m['id'] = e.key;
-            return OrderModel.fromMap(m);
-          }).toList();
-          orders.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+  // ── Orders ────────────────────────────────────────────────────────────────
+
+  Stream<List<OrderModel>> watchOrders() {
+    return _db
+        .from('orders')
+        .stream(primaryKey: ['id'])
+        .order('created_at', ascending: false)
+        .map((rows) {
+          final orders = rows.map((r) => OrderModel.fromSupabase(r)).toList();
           _cachedOrders = orders;
-          yield orders;
-        } else {
-          _cachedOrders = [];
-          yield [];
-        }
-      } catch (_) {
-        yield _cachedOrders;
-      }
-      await Future.delayed(const Duration(seconds: 3));
-    }
+          return orders;
+        });
   }
 
   Future<String> createOrder(OrderModel order) async {
     final driver = _findBestDriver();
     final status = driver != null ? OrderStatus.accepted : OrderStatus.pending;
-    final withId = OrderModel(
-      id: '',
-      customerName: order.customerName,
-      phoneNumber: order.phoneNumber,
-      deliveryAddress: order.deliveryAddress,
-      deliveryLat: order.deliveryLat,
-      deliveryLng: order.deliveryLng,
-      items: order.items,
-      paymentType: order.paymentType,
-      status: status,
-      createdAt: DateTime.now(),
-      operatorId: 'local',
-      driverId: driver?.id,
-      fromCall: order.fromCall,
-    );
     if (driver != null) {
       _driverActiveOrders[driver.id] = (_driverActiveOrders[driver.id] ?? 0) + 1;
     }
-    final res = await _client.post(
-      Uri.parse('$_dbUrl/orders.json'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode(withId.toMap()),
-    );
-    final key = (jsonDecode(res.body) as Map)['name'] as String;
-    await _client.patch(
-      Uri.parse('$_dbUrl/orders/$key.json'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({'id': key}),
-    );
-    return key;
+    final toInsert = {
+      'customer_name':    order.customerName,
+      'phone_number':     order.phoneNumber,
+      'delivery_address': order.deliveryAddress,
+      'delivery_lat':     order.deliveryLat,
+      'delivery_lng':     order.deliveryLng,
+      'items':            order.items.map((i) => i.toJson()).toList(),
+      'status':           status.name,
+      'created_at':       DateTime.now().millisecondsSinceEpoch,
+      'payment_type':     order.paymentType.name,
+      'operator_id':      order.operatorId,
+      'driver_id':        driver?.id,
+      'from_call':        order.fromCall,
+    };
+    final row = await _db.from('orders').insert(toInsert).select().single();
+    return row['id'].toString();
   }
 
   Future<void> updateOrderStatus(String orderId, OrderStatus status) async {
     final body = <String, dynamic>{'status': status.name};
     if (status == OrderStatus.pickedUp) {
-      body['pickedUpAt'] = DateTime.now().millisecondsSinceEpoch;
+      body['picked_up_at'] = DateTime.now().millisecondsSinceEpoch;
     }
     if (status == OrderStatus.delivered) {
-      body['deliveredAt'] = DateTime.now().millisecondsSinceEpoch;
-      final res = await _client.get(Uri.parse('$_dbUrl/orders/$orderId.json'));
-      if (res.statusCode == 200 && res.body != 'null') {
-        final order = OrderModel.fromMap(Map<String, dynamic>.from(jsonDecode(res.body) as Map));
+      body['delivered_at'] = DateTime.now().millisecondsSinceEpoch;
+      final matching = _cachedOrders.where((o) => o.id == orderId);
+      if (matching.isNotEmpty) {
+        final order = matching.first;
         final driverId = order.driverId;
         if (driverId != null) {
+          final di = _cachedDrivers.indexWhere((d) => d.id == driverId);
+          if (di != -1) {
+            final d = _cachedDrivers[di];
+            await _db.from('drivers').update({
+              'today_deliveries': d.todayDeliveries + 1,
+              'today_earnings':   d.todayEarnings + order.total,
+            }).eq('id', driverId);
+          }
           final current = _driverActiveOrders[driverId] ?? 1;
           _driverActiveOrders[driverId] = (current - 1).clamp(0, _maxOrdersPerDriver);
-          final di = _drivers.indexWhere((d) => d.id == driverId);
-          if (di != -1) {
-            _drivers[di] = _drivers[di].copyWith(
-              todayDeliveries: _drivers[di].todayDeliveries + 1,
-              todayEarnings: _drivers[di].todayEarnings + order.total,
-            );
-            _driversCtrl.add(List.unmodifiable(_drivers));
-          }
         }
       }
     }
-    await _client.patch(
-      Uri.parse('$_dbUrl/orders/$orderId.json'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode(body),
-    );
+    await _db.from('orders').update(body).eq('id', orderId);
   }
 
-  // --- Stats ---
+  // ── Stats ─────────────────────────────────────────────────────────────────
+
   PlatformStats computeStats(String period) {
     final now = DateTime.now();
     final delivered = _cachedOrders.where((o) => o.status == OrderStatus.delivered);
@@ -210,12 +252,13 @@ class FirebaseService {
     Iterable<OrderModel> filtered;
     switch (period) {
       case 'month':
-        filtered = delivered.where((o) => o.createdAt.year == now.year && o.createdAt.month == now.month);
+        filtered = delivered.where(
+            (o) => o.createdAt.year == now.year && o.createdAt.month == now.month);
         break;
       case 'year':
         filtered = delivered.where((o) => o.createdAt.year == now.year);
         break;
-      default: // 'today'
+      default:
         filtered = delivered.where((o) =>
             o.createdAt.year == now.year &&
             o.createdAt.month == now.month &&
@@ -227,7 +270,10 @@ class FirebaseService {
 
     final cashList = list.where((o) => o.paymentType == PaymentType.cash).toList();
     final cardList = list.where((o) => o.paymentType == PaymentType.card).toList();
-    final times = list.where((o) => o.deliveryMinutes != null).map((o) => o.deliveryMinutes!).toList();
+    final times = list
+        .where((o) => o.deliveryMinutes != null)
+        .map((o) => o.deliveryMinutes!)
+        .toList();
 
     return PlatformStats(
       totalOrders: list.length,
@@ -237,13 +283,24 @@ class FirebaseService {
       cardOrders: cardList.length,
       cardAmount: cardList.fold(0.0, (s, o) => s + o.total),
       totalEarnings: list.fold(0.0, (s, o) => s + o.total),
-      avgDeliveryMinutes: times.isEmpty ? 0 : times.reduce((a, b) => a + b) / times.length,
+      avgDeliveryMinutes:
+          times.isEmpty ? 0 : times.reduce((a, b) => a + b) / times.length,
     );
   }
 
-  // --- Drivers ---
-  late List<DriverAccount> _drivers;
-  final _driversCtrl = StreamController<List<DriverAccount>>.broadcast();
+  // ── Drivers ───────────────────────────────────────────────────────────────
+
+  Stream<List<DriverAccount>> watchDrivers() {
+    return _db
+        .from('drivers')
+        .stream(primaryKey: ['id'])
+        .map((rows) {
+          _cachedDrivers = rows
+              .map((r) => _driverFromRow(Map<String, dynamic>.from(r as Map)))
+              .toList();
+          return List<DriverAccount>.unmodifiable(_cachedDrivers);
+        });
+  }
 
   Future<void> addDriver({
     required String name,
@@ -253,46 +310,75 @@ class FirebaseService {
     required String password,
   }) async {
     final id = 'drv-${DateTime.now().millisecondsSinceEpoch}';
-    _drivers.insert(0, DriverAccount(
-      id: id,
-      name: name,
-      email: email.toLowerCase(),
-      phone: phone,
-      vehicleType: vehicleType,
-    ));
-    _driversCtrl.add(List.unmodifiable(_drivers));
+    await _db.from('drivers').insert({
+      'id':               id,
+      'name':             name,
+      'email':            email.toLowerCase(),
+      'phone':            phone,
+      'vehicle_type':     vehicleType.name,
+      'is_online':        false,
+      'today_deliveries': 0,
+      'today_earnings':   0.0,
+    });
   }
 
   Future<void> deleteDriver(String id) async {
-    _drivers.removeWhere((d) => d.id == id);
-    _driversCtrl.add(List.unmodifiable(_drivers));
+    await _db.from('drivers').delete().eq('id', id);
   }
 
-  Stream<List<DriverAccount>> watchDrivers() {
-    Future.microtask(() => _driversCtrl.add(List.unmodifiable(_drivers)));
-    return _driversCtrl.stream;
+  String? driverName(String? driverId) {
+    if (driverId == null) return null;
+    try {
+      return _cachedDrivers.firstWhere((d) => d.id == driverId).name;
+    } catch (_) {
+      return null;
+    }
   }
 
   Future<void> initNotifications() async {}
 
   // ── Restaurant settings ───────────────────────────────────────────────────
 
-  Future<Map<String, String>> getRestaurantSettings() async {
+  static Future<(double?, double?)> _geocode(String address) async {
     try {
-      final res = await _client
-          .get(Uri.parse('$_dbUrl/settings/restaurant.json'))
-          .timeout(const Duration(seconds: 8));
-      if (res.statusCode == 200 && res.body != 'null') {
-        final m = Map<String, dynamic>.from(jsonDecode(res.body) as Map);
-        return {
-          'name':    m['name']?.toString()    ?? '',
-          'address': m['address']?.toString() ?? '',
-          'phone':   m['phone']?.toString()   ?? '',
-          'hours':   m['hours']?.toString()   ?? '',
-        };
+      final uri = Uri.https('nominatim.openstreetmap.org', '/search', {
+        'q': address, 'format': 'json', 'limit': '1',
+      });
+      final response = await http.get(uri, headers: {'User-Agent': 'DHelperApp/1.0'});
+      if (response.statusCode != 200) return (null, null);
+      final data = jsonDecode(response.body) as List;
+      if (data.isEmpty) return (null, null);
+      final first = data.first as Map<String, dynamic>;
+      return (
+        double.tryParse(first['lat']?.toString() ?? ''),
+        double.tryParse(first['lon']?.toString() ?? ''),
+      );
+    } catch (_) {
+      return (null, null);
+    }
+  }
+
+  Future<Map<String, dynamic>> getRestaurantSettings() async {
+    try {
+      final rows = await _db
+          .from('restaurant_settings')
+          .select()
+          .eq('id', 'restaurant');
+      if ((rows as List).isEmpty) {
+        return {'name': '', 'address': '', 'phone': '', 'hours': '', 'lat': null, 'lng': null};
       }
-    } catch (_) {}
-    return {'name': '', 'address': '', 'phone': '', 'hours': ''};
+      final r = rows.first as Map<String, dynamic>;
+      return {
+        'name':    r['name']?.toString()    ?? '',
+        'address': r['address']?.toString() ?? '',
+        'phone':   r['phone']?.toString()   ?? '',
+        'hours':   r['hours']?.toString()   ?? '',
+        'lat':     (r['lat'] as num?)?.toDouble(),
+        'lng':     (r['lng'] as num?)?.toDouble(),
+      };
+    } catch (_) {
+      return {'name': '', 'address': '', 'phone': '', 'hours': '', 'lat': null, 'lng': null};
+    }
   }
 
   Future<void> saveRestaurantSettings({
@@ -301,56 +387,39 @@ class FirebaseService {
     required String phone,
     required String hours,
   }) async {
-    await _client.put(
-      Uri.parse('$_dbUrl/settings/restaurant.json'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({'name': name, 'address': address, 'phone': phone, 'hours': hours}),
-    );
+    final (lat, lng) = await _geocode(address);
+    final data = <String, dynamic>{
+      'id':      'restaurant',
+      'name':    name,
+      'address': address,
+      'phone':   phone,
+      'hours':   hours,
+    };
+    if (lat != null) data['lat'] = lat;
+    if (lng != null) data['lng'] = lng;
+    await _db.from('restaurant_settings').upsert(data);
   }
 
   // ── GPS simulation ────────────────────────────────────────────────────────
-  // Moves online drivers by a small random amount every 5 s and writes to Firebase.
   Timer? _gpsSimTimer;
 
   void _startGpsSimulation() {
     final rng = Random();
     _gpsSimTimer = Timer.periodic(const Duration(seconds: 5), (_) {
-      bool changed = false;
-      for (int i = 0; i < _drivers.length; i++) {
-        final d = _drivers[i];
+      for (final d in List<DriverAccount>.from(_cachedDrivers)) {
         if (!d.isOnline || d.lat == null || d.lng == null) continue;
         final dlat = (rng.nextDouble() - 0.5) * 0.00018;
         final dlng = (rng.nextDouble() - 0.5) * 0.00018;
-        _drivers[i] = d.copyWith(lat: d.lat! + dlat, lng: d.lng! + dlng);
-        // Write to Firebase REST
-        _client.patch(
-          Uri.parse('$_dbUrl/drivers/${d.id}.json'),
-          headers: {'Content-Type': 'application/json'},
-          body: jsonEncode({
-            'lat': _drivers[i].lat,
-            'lng': _drivers[i].lng,
-            'isOnline': true,
-            'name': d.name,
-            'id': d.id,
-          }),
-        );
-        changed = true;
+        _db.from('drivers').update({
+          'lat': d.lat! + dlat,
+          'lng': d.lng! + dlng,
+        }).eq('id', d.id);
       }
-      if (changed) _driversCtrl.add(List.unmodifiable(_drivers));
     });
   }
 
-  // Helper: name of assigned driver for display in order list
-  String? driverName(String? driverId) {
-    if (driverId == null) return null;
-    try {
-      return _drivers.firstWhere((d) => d.id == driverId).name;
-    } catch (_) {
-      return null;
-    }
-  }
+  // ── Restaurants (in-memory) ───────────────────────────────────────────────
 
-  // --- Restaurants ---
   final List<RestaurantAccount> _restaurants = [
     const RestaurantAccount(
       id: 'rst-seed-1',
@@ -396,7 +465,8 @@ class FirebaseService {
     return _restaurantsCtrl.stream;
   }
 
-  // --- Chart data ---
+  // ── Chart data ────────────────────────────────────────────────────────────
+
   List<int> ordersLast7Days() {
     final now = DateTime.now();
     return List.generate(7, (i) {
@@ -409,46 +479,4 @@ class FirebaseService {
           .length;
     });
   }
-
-  // ---------------------------------------------------------------------------
-  // Seed data
-  // ---------------------------------------------------------------------------
-  static List<DriverAccount> _seedDrivers() => [
-        const DriverAccount(
-          id: 'drv-seed-1',
-          name: 'Ahmed Benali',
-          email: 'ahmed@dhelper.com',
-          phone: '+34 611 111 111',
-          vehicleType: DriverVehicleType.motorcycle,
-          isOnline: true,
-          lat: 41.3938,
-          lng: 2.1618,
-          todayDeliveries: 7,
-          todayEarnings: 98.50,
-        ),
-        const DriverAccount(
-          id: 'drv-seed-2',
-          name: 'Juan García',
-          email: 'juan@dhelper.com',
-          phone: '+34 622 222 222',
-          vehicleType: DriverVehicleType.motorcycle,
-          isOnline: true,
-          lat: 41.3851,
-          lng: 2.1960,
-          todayDeliveries: 5,
-          todayEarnings: 74.00,
-        ),
-        const DriverAccount(
-          id: 'drv-seed-3',
-          name: 'María López',
-          email: 'maria@dhelper.com',
-          phone: '+34 633 333 333',
-          vehicleType: DriverVehicleType.bike,
-          isOnline: false,
-          lat: 41.3845,
-          lng: 2.1320,
-          todayDeliveries: 3,
-          todayEarnings: 41.50,
-        ),
-      ];
 }

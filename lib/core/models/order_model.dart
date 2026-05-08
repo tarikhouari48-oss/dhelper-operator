@@ -1,6 +1,6 @@
 enum OrderStatus { pending, accepted, preparing, ready, pickedUp, delivered, rejected }
 
-enum PaymentType { cash, card, online }
+enum PaymentType { cash, card, bizum }
 
 class FoodItem {
   final String name;
@@ -77,6 +77,52 @@ class OrderModel {
         'pickedUpAt': pickedUpAt?.millisecondsSinceEpoch,
         'deliveredAt': deliveredAt?.millisecondsSinceEpoch,
       };
+
+  Map<String, dynamic> toSupabase() => {
+        'customer_name':    customerName,
+        'phone_number':     phoneNumber,
+        'delivery_address': deliveryAddress,
+        'delivery_lat':     deliveryLat,
+        'delivery_lng':     deliveryLng,
+        'items':            items.map((i) => i.toJson()).toList(),
+        'status':           status.name,
+        'created_at':       createdAt.millisecondsSinceEpoch,
+        'payment_type':     paymentType.name,
+        'operator_id':      operatorId,
+        'driver_id':        driverId,
+        'from_call':        fromCall,
+      };
+
+  factory OrderModel.fromSupabase(Map<String, dynamic> r) => OrderModel(
+        id:              r['id']?.toString() ?? '',
+        customerName:    r['customer_name']?.toString() ?? '',
+        phoneNumber:     r['phone_number']?.toString() ?? '',
+        deliveryAddress: r['delivery_address']?.toString() ?? '',
+        deliveryLat:     (r['delivery_lat'] as num?)?.toDouble(),
+        deliveryLng:     (r['delivery_lng'] as num?)?.toDouble(),
+        items: (r['items'] as List<dynamic>? ?? [])
+            .map((i) => FoodItem.fromJson(Map<String, dynamic>.from(i as Map)))
+            .toList(),
+        status: OrderStatus.values.firstWhere(
+          (s) => s.name == r['status'],
+          orElse: () => OrderStatus.pending,
+        ),
+        paymentType: PaymentType.values.firstWhere(
+          (p) => p.name == r['payment_type'],
+          orElse: () => PaymentType.cash,
+        ),
+        createdAt: DateTime.fromMillisecondsSinceEpoch(
+            (r['created_at'] as num?)?.toInt() ?? 0),
+        operatorId: r['operator_id']?.toString() ?? 'local',
+        driverId:   r['driver_id']?.toString(),
+        fromCall:   r['from_call'] as bool? ?? false,
+        pickedUpAt: r['picked_up_at'] != null
+            ? DateTime.fromMillisecondsSinceEpoch((r['picked_up_at'] as num).toInt())
+            : null,
+        deliveredAt: r['delivered_at'] != null
+            ? DateTime.fromMillisecondsSinceEpoch((r['delivered_at'] as num).toInt())
+            : null,
+      );
 
   factory OrderModel.fromMap(Map<String, dynamic> m) => OrderModel(
         id: m['id']?.toString() ?? '',

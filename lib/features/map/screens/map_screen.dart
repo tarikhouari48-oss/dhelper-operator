@@ -1,13 +1,23 @@
+import 'dart:convert';
+// ignore: avoid_web_libraries_in_flutter
+import 'dart:html' as html;
+import 'dart:ui_web' as ui_web;
 import 'package:flutter/material.dart';
-import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:latlong2/latlong.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../../features/drivers/providers/drivers_provider.dart';
 import '../../../core/models/driver_model.dart';
 
 const _green = Color(0xFF10B981);
 const _restLat = 41.3917;
 const _restLng = 2.1649;
+
+final _restRowProvider = StreamProvider.autoDispose<Map<String, dynamic>?>((ref) {
+  return Supabase.instance.client
+      .from('restaurant_settings')
+      .stream(primaryKey: ['id'])
+      .map((rows) => rows.isEmpty ? null : Map<String, dynamic>.from(rows.first as Map));
+});
 
 class MapScreen extends ConsumerStatefulWidget {
   const MapScreen({super.key});
@@ -17,74 +27,88 @@ class MapScreen extends ConsumerStatefulWidget {
 }
 
 class _MapScreenState extends ConsumerState<MapScreen> {
-  final _mapCtrl = MapController();
+  static bool _registered = false;
+  static html.IFrameElement? _iframe;
+  static const _viewType = 'op-leaflet-map';
+
   DriverAccount? _selectedDriver;
+  List<DriverAccount> _prevDrivers = [];
+  bool _iframeReady = false;
+
+  @override
+  void initState() {
+    super.initState();
+    if (!_registered) {
+      _registered = true;
+      final origin = html.window.location.origin;
+      final src = '$origin/map.html?lat=$_restLat&lng=$_restLng&zoom=14&color=%2310B981';
+      ui_web.platformViewRegistry.registerViewFactory(_viewType, (id) {
+        _iframe = html.IFrameElement()
+          ..src = src
+          ..style.border = 'none'
+          ..style.width = '100%'
+          ..style.height = '100%';
+        return _iframe!;
+      });
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      await Future.delayed(const Duration(milliseconds: 1200));
+      if (mounted) {
+        setState(() => _iframeReady = true);
+        _sendRestaurant(ref.read(_restRowProvider).valueOrNull);
+      }
+    });
+  }
+
+  void _sendRestaurant(Map<String, dynamic>? r) {
+    if (r == null) return;
+    final lat = (r['lat'] as num?)?.toDouble();
+    final lng = (r['lng'] as num?)?.toDouble();
+    if (lat == null) return;
+    _iframe?.contentWindow?.postMessage(
+      jsonEncode({'type': 'setRestaurant', 'lat': lat, 'lng': lng, 'address': r['address'] ?? ''}),
+      '*',
+    );
+  }
+
+  void _updateDriverMarkers(List<DriverAccount> drivers) {
+    final markers = drivers
+        .where((d) => d.lat != null && d.lng != null)
+        .map((d) => {
+              'lat': d.lat!,
+              'lng': d.lng!,
+              'color': d.isOnline ? '#10B981' : '#9CA3AF',
+              'label': d.name.split(' ').first,
+            })
+        .toList();
+    _iframe?.contentWindow?.postMessage(
+      jsonEncode({'type': 'setMarkers', 'markers': markers}),
+      '*',
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
-    final driversAsync = ref.watch(driversStreamProvider);
-    final drivers = driversAsync.valueOrNull ?? [];
+    final drivers = ref.watch(driversStreamProvider).valueOrNull ?? [];
+
+    // Update marker when restaurant settings change in real-time
+    ref.listen(_restRowProvider, (_, next) {
+      if (_iframeReady) _sendRestaurant(next.valueOrNull);
+    });
+
+    if (drivers != _prevDrivers) {
+      _prevDrivers = drivers;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _updateDriverMarkers(drivers);
+      });
+    }
 
     return Stack(
       children: [
-        FlutterMap(
-          mapController: _mapCtrl,
-          options: const MapOptions(
-            initialCenter: LatLng(_restLat, _restLng),
-            initialZoom: 14,
-          ),
-          children: [
-            TileLayer(
-              urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-              userAgentPackageName: 'com.dhelper.operator',
-            ),
-            // Restaurant zone
-            CircleLayer(circles: [
-              CircleMarker(
-                point: const LatLng(_restLat, _restLng),
-                radius: 500,
-                useRadiusInMeter: true,
-                color: _green.withAlpha(20),
-                borderColor: _green.withAlpha(100),
-                borderStrokeWidth: 1.5,
-              ),
-            ]),
-            // Driver markers
-            MarkerLayer(
-              markers: [
-                // Restaurant marker
-                Marker(
-                  point: const LatLng(_restLat, _restLng),
-                  width: 36,
-                  height: 36,
-                  child: Container(
-                    decoration: BoxDecoration(
-                      color: _green,
-                      shape: BoxShape.circle,
-                      border: Border.all(color: Colors.white, width: 2),
-                      boxShadow: [BoxShadow(color: _green.withAlpha(80), blurRadius: 8)],
-                    ),
-                    child: const Icon(Icons.storefront, color: Colors.white, size: 18),
-                  ),
-                ),
-                // Driver markers
-                ...drivers
-                    .where((d) => d.lat != null && d.lng != null)
-                    .map((d) => Marker(
-                          point: LatLng(d.lat!, d.lng!),
-                          width: 44,
-                          height: 44,
-                          child: GestureDetector(
-                            onTap: () => setState(() => _selectedDriver = _selectedDriver?.id == d.id ? null : d),
-                            child: _DriverMarker(driver: d),
-                          ),
-                        )),
-              ],
-            ),
-          ],
-        ),
+        // ── Leaflet map (full background) ─────────────────────────
+        const Positioned.fill(child: HtmlElementView(viewType: _viewType)),
 
-        // Driver info popup
+        // ── Driver info popup ─────────────────────────────────────
         if (_selectedDriver != null)
           Positioned(
             top: 12,
@@ -96,58 +120,22 @@ class _MapScreenState extends ConsumerState<MapScreen> {
             ),
           ),
 
-        // Legend
+        // ── Legend ────────────────────────────────────────────────
         Positioned(
           bottom: 16,
           left: 16,
-          child: _Legend(drivers: drivers),
-        ),
-      ],
-    );
-  }
-}
-
-class _DriverMarker extends StatelessWidget {
-  final DriverAccount driver;
-  const _DriverMarker({required this.driver});
-
-  IconData get _vehicleIcon => switch (driver.vehicleType) {
-        DriverVehicleType.motorcycle => Icons.two_wheeler,
-        DriverVehicleType.bike => Icons.pedal_bike,
-      };
-
-  @override
-  Widget build(BuildContext context) {
-    final color = driver.isOnline ? _green : Colors.grey;
-    return Column(
-      children: [
-        Container(
-          width: 36,
-          height: 36,
-          decoration: BoxDecoration(
-            color: color,
-            shape: BoxShape.circle,
-            border: Border.all(color: Colors.white, width: 2),
-            boxShadow: [BoxShadow(color: color.withAlpha(80), blurRadius: 6)],
-          ),
-          child: Icon(_vehicleIcon, color: Colors.white, size: 18),
-        ),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(6),
-            boxShadow: [BoxShadow(color: Colors.black.withAlpha(20), blurRadius: 4)],
-          ),
-          child: Text(
-            driver.name.split(' ').first,
-            style: TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: color),
+          child: _Legend(
+            drivers: drivers,
+            onDriverTap: (d) => setState(() =>
+                _selectedDriver = _selectedDriver?.id == d.id ? null : d),
           ),
         ),
       ],
     );
   }
 }
+
+// ── Driver info card ──────────────────────────────────────────────────────────
 
 class _DriverInfoCard extends StatelessWidget {
   final DriverAccount driver;
@@ -174,7 +162,8 @@ class _DriverInfoCard extends StatelessWidget {
               backgroundColor: color.withAlpha(30),
               child: Text(
                 driver.name[0].toUpperCase(),
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: color),
+                style: TextStyle(
+                    fontSize: 18, fontWeight: FontWeight.bold, color: color),
               ),
             ),
             const SizedBox(width: 12),
@@ -182,18 +171,31 @@ class _DriverInfoCard extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(driver.name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+                  Text(driver.name,
+                      style: const TextStyle(
+                          fontWeight: FontWeight.bold, fontSize: 15)),
                   Row(
                     children: [
-                      Container(width: 7, height: 7, decoration: BoxDecoration(shape: BoxShape.circle, color: color), margin: const EdgeInsets.only(right: 4)),
+                      Container(
+                          width: 7,
+                          height: 7,
+                          decoration: BoxDecoration(
+                              shape: BoxShape.circle, color: color),
+                          margin: const EdgeInsets.only(right: 4)),
                       Text(
                         driver.isOnline ? 'En línea' : 'Desconectado',
-                        style: TextStyle(fontSize: 12, color: color, fontWeight: FontWeight.w500),
+                        style: TextStyle(
+                            fontSize: 12,
+                            color: color,
+                            fontWeight: FontWeight.w500),
                       ),
                       const SizedBox(width: 10),
-                      Icon(Icons.local_shipping_outlined, size: 12, color: Colors.grey),
+                      const Icon(Icons.local_shipping_outlined,
+                          size: 12, color: Colors.grey),
                       const SizedBox(width: 3),
-                      Text('${driver.todayDeliveries} hoy', style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                      Text('${driver.todayDeliveries} hoy',
+                          style: const TextStyle(
+                              fontSize: 12, color: Colors.grey)),
                     ],
                   ),
                   Text(
@@ -204,7 +206,8 @@ class _DriverInfoCard extends StatelessWidget {
                 ],
               ),
             ),
-            IconButton(icon: const Icon(Icons.close, size: 18), onPressed: onClose),
+            IconButton(
+                icon: const Icon(Icons.close, size: 18), onPressed: onClose),
           ],
         ),
       ),
@@ -212,13 +215,16 @@ class _DriverInfoCard extends StatelessWidget {
   }
 }
 
+// ── Legend ────────────────────────────────────────────────────────────────────
+
 class _Legend extends StatelessWidget {
   final List<DriverAccount> drivers;
-  const _Legend({required this.drivers});
+  final void Function(DriverAccount) onDriverTap;
+  const _Legend({required this.drivers, required this.onDriverTap});
 
   @override
   Widget build(BuildContext context) {
-    final online = drivers.where((d) => d.isOnline).length;
+    final online = drivers.where((d) => d.isOnline).toList();
     final offline = drivers.where((d) => !d.isOnline).length;
 
     return Container(
@@ -230,41 +236,47 @@ class _Legend extends StatelessWidget {
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
         children: [
-          _LegendRow(color: _green, label: 'En línea: $online'),
-          const SizedBox(height: 4),
-          _LegendRow(color: Colors.grey, label: 'Offline: $offline'),
-          const SizedBox(height: 4),
-          _LegendRow(color: _green, label: 'Restaurante', isSquare: true),
+          ...online.map((d) => Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: InkWell(
+                  onTap: () => onDriverTap(d),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                          width: 8, height: 8,
+                          decoration: const BoxDecoration(
+                              color: _green, shape: BoxShape.circle)),
+                      const SizedBox(width: 6),
+                      Text(d.name.split(' ').first,
+                          style: const TextStyle(
+                              fontSize: 11, fontWeight: FontWeight.w600)),
+                      const SizedBox(width: 4),
+                      Text('${d.todayDeliveries}🛵',
+                          style: const TextStyle(fontSize: 10, color: Colors.grey)),
+                    ],
+                  ),
+                ),
+              )),
+          if (offline > 0) ...[
+            if (online.isNotEmpty) const SizedBox(height: 2),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                    width: 8, height: 8,
+                    decoration: BoxDecoration(
+                        color: Colors.grey.shade400, shape: BoxShape.circle)),
+                const SizedBox(width: 6),
+                Text('Offline: $offline',
+                    style: const TextStyle(fontSize: 11, color: Colors.grey)),
+              ],
+            ),
+          ],
         ],
       ),
-    );
-  }
-}
-
-class _LegendRow extends StatelessWidget {
-  final Color color;
-  final String label;
-  final bool isSquare;
-  const _LegendRow({required this.color, required this.label, this.isSquare = false});
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Container(
-          width: 10,
-          height: 10,
-          decoration: BoxDecoration(
-            color: color,
-            shape: isSquare ? BoxShape.rectangle : BoxShape.circle,
-            borderRadius: isSquare ? BorderRadius.circular(2) : null,
-          ),
-        ),
-        const SizedBox(width: 6),
-        Text(label, style: const TextStyle(fontSize: 11)),
-      ],
     );
   }
 }
